@@ -80,9 +80,23 @@ def init_db():
         )
     """)
 
+    _migrate_users_table(cursor)
     conn.commit()
     conn.close()
     print("✅ Database initialized successfully.")
+
+
+def _migrate_users_table(cursor):
+    """Add columns for Odoo employee sync (safe on existing DBs)."""
+    existing = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
+    migrations = [
+        ("odoo_employee_id", "INTEGER"),
+        ("odoo_employee_name", "TEXT"),
+        ("display_name", "TEXT"),
+    ]
+    for col, col_type in migrations:
+        if col not in existing:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type}")
 
 def seed_admin():
     """Create default admin user if no users exist."""

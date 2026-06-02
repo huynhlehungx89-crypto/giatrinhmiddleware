@@ -35,7 +35,7 @@ async def odoo_client_request_scope(request, call_next):
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Include routers
-from routes import auth, upload, preview, settings, import_, result, history
+from routes import auth, upload, preview, settings, import_, result, history, admin
 app.include_router(auth.router)
 app.include_router(upload.router)
 app.include_router(preview.router)
@@ -43,6 +43,7 @@ app.include_router(settings.router)
 app.include_router(import_.router)
 app.include_router(result.router)
 app.include_router(history.router)
+app.include_router(admin.router)
 
 if APP_ENV == "development":
     from routes import debug

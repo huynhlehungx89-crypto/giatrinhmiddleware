@@ -21,7 +21,7 @@
         }
         .navbar a { color: white; text-decoration: none; margin-left: 20px; font-size: 15px; }
         .navbar a:hover { text-decoration: underline; }
-        .container { max-width: 860px; margin: 40px auto; padding: 0 20px; }
+        .container { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
         .card {
             background: white;
             border-radius: 8px;
@@ -48,6 +48,7 @@
             border-radius: 6px;
             margin-bottom: 20px;
             font-size: 14px;
+            white-space: pre-line;
         }
         .alert-error { background: #fde8e8; color: #c81e1e; border: 1px solid #f8b4b4; }
         .alert-success { background: #def7ec; color: #03543f; border: 1px solid #84e1bc; }
@@ -70,6 +71,9 @@
     </nav>
     {% endif %}
     <div class="container">
+        {% if flash %}
+        <div class="alert alert-{{ flash.level }}">{{ flash.message }}</div>
+        {% endif %}
         {% block content %}{% endblock %}
     </div>
 </body>

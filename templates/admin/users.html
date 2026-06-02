@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:1000px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;margin-bottom:24px;">
+        <h1 style="margin:0;">👥 Quản lý người dùng</h1>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+            <form id="syncForm" method="post" action="/admin/users/sync" style="margin:0;">
+                <button type="submit" id="syncBtn" class="btn btn-primary"
+                    onclick="return confirmSync(event)">
+                    🔄 Đồng bộ nhân viên từ Odoo
+                </button>
+            </form>
+            <form id="cleanupForm" method="post" action="/admin/users/cleanup" style="margin:0;">
+                <button type="submit" id="cleanupBtn" class="btn btn-secondary"
+                    onclick="return confirmCleanup(event)">
+                    🧹 Dọn dẹp tài khoản trùng
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Họ tên</th>
+                <th>Vai trò</th>
+                <th>Trạng thái</th>
+                <th>Thao tác</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td><code>{{ u.username }}</code></td>
+                <td>{{ u.display_name or u.odoo_employee_name or '—' }}</td>
+                <td>{{ u.role }}</td>
+                <td>
+                    {% if u.is_active %}
+                    <span class="badge badge-success">Hoạt động</span>
+                    {% else %}
+                    <span class="badge badge-error">Khóa</span>
+                    {% endif %}
+                </td>
+                <td style="white-space:nowrap;">
+                    <a href="/admin/users/{{ u.id }}/edit" class="btn btn-secondary"
+                       style="padding:6px 12px;font-size:13px;">Sửa</a>
+                    {% if u.role != 'admin' %}
+                    <form method="post" action="/admin/users/{{ u.id }}/reset-password"
+                          style="display:inline;margin-left:6px;"
+                          onsubmit="return confirm('Reset mật khẩu về 12345678 cho {{ u.username }}?')">
+                        <button type="submit" class="btn btn-danger"
+                                style="padding:6px 12px;font-size:13px;">
+                            Reset mật khẩu
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" style="text-align:center;color:#6b7280;padding:24px;">
+                    Chưa có người dùng. Nhấn đồng bộ từ Odoo để tạo tài khoản.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function confirmSync(e) {
+    if (!confirm('Đồng bộ sẽ tạo tài khoản cho tất cả nhân viên trong Odoo chưa có tài khoản. Tiếp tục?')) {
+        e.preventDefault();
+        return false;
+    }
+    var btn = document.getElementById('syncBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang đồng bộ...';
+    return true;
+}
+
+function confirmCleanup(e) {
+    if (!confirm('Xóa tất cả tài khoản trùng (_2, _3...) không có lịch sử import?')) {
+        e.preventDefault();
+        return false;
+    }
+    var btn = document.getElementById('cleanupBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang dọn dẹp...';
+    return true;
+}
+</script>
+{% endblock %}

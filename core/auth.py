@@ -1,3 +1,5 @@
+import re
+import unicodedata
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,6 +13,47 @@ from config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 import database
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+DEFAULT_SYNC_PASSWORD = "12345678"
+
+
+def slugify_vietnamese(name: str) -> str:
+    """
+    Convert Vietnamese display name to username slug.
+    Lowercase, no accents, alphanumeric only, no spaces.
+    """
+    if not name:
+        return ""
+    text = str(name).strip()
+    text = text.replace("đ", "d").replace("Đ", "d")
+    normalized = unicodedata.normalize("NFD", text)
+    without_marks = "".join(
+        ch for ch in normalized if unicodedata.category(ch) != "Mn"
+    )
+    lowered = without_marks.lower()
+    slug = re.sub(r"[^a-z0-9]", "", lowered)
+    return slug
+
+
+def allocate_unique_username(conn, base_slug: str, reserved: set) -> str:
+    """Resolve username collisions with _2, _3 suffixes (DB + in-batch)."""
+    if not base_slug:
+        base_slug = "user"
+    candidate = base_slug
+    suffix = 2
+    while True:
+        if candidate in reserved:
+            candidate = f"{base_slug}_{suffix}"
+            suffix += 1
+            continue
+        row = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (candidate,)
+        ).fetchone()
+        if row:
+            candidate = f"{base_slug}_{suffix}"
+            suffix += 1
+            continue
+        reserved.add(candidate)
+        return candidate
 
 
 def hash_password(password: str) -> str:
@@ -67,6 +110,37 @@ def get_user_by_username(username: str) -> Optional[dict]:
     conn = database.get_db()
     row = conn.execute(
         "SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def get_user_by_username_any(username: str) -> Optional[dict]:
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT * FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def get_user_by_id(user_id: str) -> Optional[dict]:
+    conn = database.get_db()
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def get_user_by_odoo_employee_id(employee_id: int) -> Optional[dict]:
+    conn = database.get_db()
+    row = conn.execute(
+        "SELECT * FROM users WHERE odoo_employee_id = ?", (employee_id,)
     ).fetchone()
     conn.close()
     if row:

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:560px;margin:0 auto;">
+    <h1>✏️ Sửa người dùng</h1>
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <p style="margin-bottom:20px;color:#6b7280;">
+        Nhân viên Odoo hiện tại:
+        <strong>{{ edit_user.odoo_employee_name or '—' }}</strong>
+        {% if edit_user.odoo_employee_id %}
+        (ID: {{ edit_user.odoo_employee_id }})
+        {% endif %}
+    </p>
+
+    <form method="post" action="/admin/users/{{ edit_user.id }}/edit">
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Username</label>
+            <input type="text" value="{{ edit_user.username }}" readonly
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;background:#f3f4f6;">
+        </div>
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Họ tên hiển thị</label>
+            <input type="text" name="display_name"
+                value="{{ edit_user.display_name or edit_user.odoo_employee_name or '' }}"
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Vai trò</label>
+            <select name="role" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;"
+                {% if edit_user.role == 'admin' %}disabled{% endif %}>
+                <option value="user" {% if edit_user.role == 'user' %}selected{% endif %}>user</option>
+                <option value="admin" {% if edit_user.role == 'admin' %}selected{% endif %}>admin</option>
+            </select>
+            {% if edit_user.role == 'admin' %}
+            <input type="hidden" name="role" value="admin">
+            {% endif %}
+        </div>
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Mật khẩu mới (tùy chọn)</label>
+            <input type="password" name="new_password" placeholder="Để trống nếu không đổi"
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <div style="margin-bottom:24px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Gán nhân viên Odoo</label>
+            <select name="odoo_employee_id" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+                <option value="">— Không đổi / bỏ gán —</option>
+                {% for emp in employees %}
+                <option value="{{ emp.id }}"
+                    {% if edit_user.odoo_employee_id == emp.id %}selected{% endif %}>
+                    {{ emp.name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Lưu</button>
+        <a href="/admin/users" class="btn btn-secondary" style="margin-left:12px;">Hủy</a>
+    </form>
+</div>
+{% endblock %}

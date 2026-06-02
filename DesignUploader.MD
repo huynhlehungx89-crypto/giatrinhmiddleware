@@ -1,7 +1,7 @@
 # DesignUploader — VinMart → Odoo Middleware
 
 > **Living design document** for the `odoo-middleware` project.  
-> Last updated: 2026-06-02 (MVP build session).
+> Last updated: 2026-06-02 (admin user sync + duplicate cleanup).
 
 ---
 
@@ -15,6 +15,12 @@ Web middleware that lets staff:
 4. Preview VALID / ERROR / SKIPPED
 5. Push VALID orders into Odoo as `sale.order` + `sale.order.line`
 6. Review import results and history
+
+**Admins additionally:**
+
+7. Sync middleware users from Odoo `hr.employee` (one-click, no manual user creation)
+8. Clean up duplicate suffix accounts (`behung_2`, etc.)
+9. Edit users, reset passwords, re-assign Odoo employee
 
 **Production Odoo (session-tested):** `http://192.168.1.188:8069`  
 **Database:** `giatrinh-erp-3`  
@@ -50,7 +56,10 @@ odoo-middleware/
 ├── DesignUploader.MD       # This file
 │
 ├── core/
-│   ├── auth.py             # JWT, login helpers, require_login/admin
+│   ├── auth.py             # JWT, slugify_vietnamese, user lookups, require_login/admin
+│   ├── flash.py            # Cookie flash messages (base64 JSON, UTF-8 safe)
+│   ├── user_sync.py        # Odoo employee dedupe + sync result formatting
+│   ├── odoo_employees.py   # get_employee_list() from hr.employee
 │   ├── file_parser.py      # parse_vinmart_file, group_rows_into_orders
 │   ├── mapper.py           # map_order_to_odoo (partner/product/company)
 │   ├── validator.py        # validate_batch → VALID | ERROR | SKIPPED
@@ -66,9 +75,11 @@ odoo-middleware/
 │   ├── result.py           # GET /result/{batch_id}
 │   ├── history.py          # GET /history
 │   ├── settings.py         # GET/POST /settings (admin, Odoo config)
+│   ├── admin.py            # /admin/users — sync, cleanup, edit, reset password
 │   └── debug.py            # GET /debug/odoo (APP_ENV=development, admin only)
 │
 ├── templates/              # base, login, upload, preview, result, history, settings
+│   └── admin/              # users.html, user_edit.html
 ├── static/style.css
 ├── data/                   # GITIGNORED — app.db
 └── uploads/                # GITIGNORED — uploaded Excel files
@@ -92,6 +103,12 @@ odoo-middleware/
     → /result/{batch_id}
 
 /history → link to /result or /preview
+
+/admin/users (admin only)
+    → POST /admin/users/sync — create users from Odoo hr.employee
+    → POST /admin/users/cleanup — remove duplicate suffix accounts
+    → GET/POST /admin/users/{id}/edit — edit display name, role, password, employee
+    → POST /admin/users/{id}/reset-password — reset to default sync password
 ```
 
 ### Batch statuses
@@ -217,7 +234,16 @@ SO id + name saved to DB immediately after SO create, before lines.
 
 ### `users`
 
-id, username, password_hash, role, is_active, created_at, last_login
+id, username, password_hash, role, is_active, created_at, last_login  
+**Migrated columns (auto on `init_db`):** `odoo_employee_id`, `odoo_employee_name`, `display_name`
+
+| Field | Purpose |
+|-------|---------|
+| `username` | Login; synced from Vietnamese name via `slugify_vietnamese()` |
+| `display_name` | Shown in UI (defaults to Odoo employee name) |
+| `odoo_employee_id` | Link to `hr.employee` |
+| `odoo_employee_name` | Cached employee name from Odoo |
+| `role` | `admin` or `user` |
 
 ### `odoo_settings` (singleton id=1)
 
@@ -250,7 +276,78 @@ line_count, status, error_message, odoo_order_id, odoo_order_name, raw_data (JSO
 | GET | `/result/{batch_id}` | user | Result screen |
 | GET | `/history` | user | Batch list (admin=all) |
 | GET/POST | `/settings` | admin | Odoo connection |
+| GET | `/admin/users` | admin | User list + sync/cleanup buttons |
+| POST | `/admin/users/sync` | admin | Sync users from Odoo `hr.employee` |
+| POST | `/admin/users/cleanup` | admin | Delete duplicate `_2`/`_3`/… accounts |
+| GET | `/admin/users/{id}/edit` | admin | Edit user form |
+| POST | `/admin/users/{id}/edit` | admin | Save user changes |
+| POST | `/admin/users/{id}/reset-password` | admin | Reset password to `12345678` |
 | GET | `/debug/odoo` | admin | JSON diagnostics (`APP_ENV=development`) |
+
+---
+
+## 8b. Admin user sync (Odoo → middleware)
+
+### UI (`/admin/users`)
+
+- **Đồng bộ nhân viên từ Odoo** (blue) — `POST /admin/users/sync`
+- **Dọn dẹp tài khoản trùng** (grey) — `POST /admin/users/cleanup`
+- Table: Username | Họ tên | Vai trò | Trạng thái | Sửa / Reset mật khẩu
+- Flash messages at top of page (`core/flash.py`, cookie `flash_message`, base64 JSON)
+
+### Username generation (`slugify_vietnamese`)
+
+- Lowercase, strip Vietnamese diacritics (`đ` → `d`, NFD + remove combining marks)
+- Alphanumeric only, no spaces  
+- Examples: `Bế Hùng` → `behung`, `Cao Thị Hoài` → `caothihoai`, `Lữ Bảo Ngọc` → `lubaongoc`
+
+### Sync rules (`POST /admin/users/sync`)
+
+1. Fetch active `hr.employee` (`core/odoo_employees.py`, limit 2000).
+2. **Deduplicate by slugified name** before insert: if multiple Odoo rows share the same slug, keep **lowest `id`** only (`core/user_sync.deduplicate_employees_by_slug`).
+3. For each unique employee:
+   - Skip if `odoo_employee_id` already linked to a user → count **đã tồn tại**
+   - Skip if slug is `admin` or starts with `admin`
+   - Skip if `username` (base slug) already exists → do **not** overwrite or reset password
+   - Else create: `role=user`, `is_active=1`, password = bcrypt(`12345678`), link Odoo fields
+4. **No `_2` / `_3` suffixes during sync** — one account per unique slugified name.
+5. On Odoo connection failure: flash error, **no users created**.
+6. Empty employee list: warning flash, no creates.
+
+**Success flash (multiline):**
+
+```
+✅ Đồng bộ hoàn tất:
+- {n} tài khoản tạo mới
+- {m} đã tồn tại (bỏ qua)
+- {k} trùng tên trong Odoo (bỏ qua)
+```
+
+### Cleanup rules (`POST /admin/users/cleanup`)
+
+Removes mistaken duplicate accounts from earlier syncs that used `_2`, `_3` suffixes:
+
+- Select users where `role != 'admin'` and username contains `_2`, `_3`, `_4`, or `_5`
+- Also delete `admin_2` if present and `role != 'admin'`
+- **Never delete** if `import_batches.uploaded_by` references that user (keep + skip)
+- **Never delete** `role = 'admin'`
+- Flash: `Đã xóa {n} tài khoản trùng lặp`
+
+**Startup:** `main.py` only runs `database.init_db()` + `database.seed_admin()` — **no** sync/cleanup/Odoo on boot.
+
+### Default synced user credentials
+
+| Field | Value |
+|-------|--------|
+| Password | `12345678` |
+| Role | `user` |
+| Access | `/upload`, `/history` — **not** `/admin/*` or `/settings` |
+
+### Admin safety
+
+- Sync never modifies existing users (password, role, username)
+- Admin accounts never deleted by cleanup
+- Reset password on non-admin rows sets `12345678` (with confirm dialog)
 
 ---
 
@@ -305,7 +402,8 @@ python test_parser.py
 1. **Store 2BP9** (`WIN HNI 27A1 Green Stars`) — no matching partner in Odoo; order stays ERROR until master data fixed.
 2. VinMart Excel uses `WM+ HNI` prefix; Odoo often has `WIN HNI` — mapper strips prefixes for search.
 3. `uvicorn` may not be on PATH on Windows; use `python -m uvicorn`.
-4. Future: user management UI, scheduled imports, confirm SO in Odoo workflow.
+4. Odoo may contain **duplicate `hr.employee` names** — sync dedupes by slug (lowest id); run **cleanup** if old `_2`/`_3` accounts remain in DB.
+5. Future: scheduled imports, confirm SO in Odoo workflow.
 
 ---
 
@@ -319,10 +417,17 @@ python test_parser.py
 | Classify | `core/validator.py` | `validate_batch` |
 | Import | `core/importer.py` | `import_batch` |
 | Odoo RPC | `core/odoo_client.py` | `OdooClient.search_read` |
+| Slug username | `core/auth.py` | `slugify_vietnamese` |
+| Employee list | `core/odoo_employees.py` | `get_employee_list` |
+| Odoo name dedupe | `core/user_sync.py` | `deduplicate_employees_by_slug` |
+| Flash messages | `core/flash.py` | `set_flash` / `get_flash` |
+| User admin UI | `routes/admin.py` | `users_sync`, `users_cleanup` |
 
 ---
 
-## 14. Change log (today)
+## 14. Change log
+
+### 2026-06-02 — MVP
 
 1. Project scaffold + auth + SQLite
 2. VinMart parser + mapper + validator
@@ -331,6 +436,15 @@ python test_parser.py
 5. Odoo connection fixes (partner name lookup, search_read, diagnostics)
 6. E2E import verified (4 SOs created)
 7. Git init + push to GitHub
+
+### 2026-06-02 — Admin user sync
+
+1. `/admin/users` — list, sync from Odoo, edit, reset password
+2. `slugify_vietnamese` + user table migration (`odoo_employee_id`, `display_name`, …)
+3. Cookie flash messages in `base.html`
+4. Odoo employee dedupe by slug (lowest id) — no per-duplicate `_2` accounts on sync
+5. `POST /admin/users/cleanup` — remove legacy `*_2`, `*_3`, `admin_2` (respects import history)
+6. Commit `8a90c84` — admin user management and Odoo employee sync
 
 ---
 

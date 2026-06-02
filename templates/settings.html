@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h1>⚙️ Cài đặt kết nối Odoo</h1>
+    {% if success %}
+    <div class="alert alert-success">Đã lưu cấu hình Odoo.</div>
+    {% endif %}
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/settings">
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">URL Odoo</label>
+            <input type="url" name="url" required value="{{ settings.url or '' }}"
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Database</label>
+            <input type="text" name="database_name" required value="{{ settings.database or '' }}"
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">Username</label>
+            <input type="text" name="username" required value="{{ settings.username or '' }}"
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <div style="margin-bottom:24px;">
+            <label style="display:block;margin-bottom:6px;font-weight:bold;">API Key / Password</label>
+            <input type="password" name="api_key" required value="{{ settings.api_key or '' }}"
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <button type="submit" class="btn btn-primary">Lưu cấu hình</button>
+        <a href="/upload" class="btn btn-secondary" style="margin-left:12px;">Quay lại Upload</a>
+    </form>
+</div>
+{% endblock %}

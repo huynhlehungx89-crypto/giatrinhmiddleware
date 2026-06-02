@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h1>📤 Upload file đơn hàng</h1>
+    <p style="color:#6b7280; margin-bottom:24px;">
+        Chọn file Excel xuất từ hệ thống VinMart để import vào Odoo.
+    </p>
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/upload" enctype="multipart/form-data">
+        <div style="margin-bottom:24px;">
+            <input type="file" name="file" accept=".xlsx,.xls,.csv" required
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+        </div>
+        <button type="submit" class="btn btn-primary">Tải lên và xem trước</button>
+    </form>
+    {% if user.role == 'admin' %}
+    <p style="margin-top:20px;">
+        <a href="/settings">Cấu hình kết nối Odoo</a>
+    </p>
+    {% endif %}
+</div>
+{% endblock %}

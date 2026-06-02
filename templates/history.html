@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+        <h1>📜 Lịch sử import</h1>
+        <a href="/upload" class="btn btn-primary">IMPORT FILE MỚI</a>
+    </div>
+
+    {% if not batches %}
+    <p style="color:#6b7280;text-align:center;padding:40px 0;">
+        Chưa có lịch sử import nào
+    </p>
+    {% else %}
+    <table>
+        <thead>
+            <tr>
+                <th>Thời gian</th>
+                <th>Tên file</th>
+                <th>Tổng</th>
+                <th>✅</th>
+                <th>❌</th>
+                <th>⏭</th>
+                <th>Trạng thái</th>
+                <th>Chi tiết</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in batches %}
+            <tr>
+                <td style="font-size:13px;">{{ b.uploaded_at }}</td>
+                <td>{{ b.filename }}</td>
+                <td>{{ (b.valid_orders or 0) + (b.error_orders or 0) + (b.skipped_orders or 0) }}</td>
+                <td>{{ b.success_orders or 0 }}</td>
+                <td>{{ b.failed_orders or 0 }}</td>
+                <td>{{ b.skipped_orders or 0 }}</td>
+                <td>
+                    {% if b.status == 'IMPORTED' %}
+                    <span class="badge badge-success">IMPORTED</span>
+                    {% elif b.status == 'PARTIAL' %}
+                    <span class="badge badge-warning">PARTIAL</span>
+                    {% elif b.status == 'FAILED' %}
+                    <span class="badge badge-error">FAILED</span>
+                    {% elif b.status == 'VALIDATED' %}
+                    <span class="badge badge-pending">VALIDATED</span>
+                    {% else %}
+                    <span class="badge badge-pending">{{ b.status }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if b.status in ['IMPORTED', 'PARTIAL', 'FAILED'] %}
+                    <a href="/result/{{ b.id }}">Chi tiết</a>
+                    {% else %}
+                    <a href="/preview/{{ b.id }}">Xem trước</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% endblock %}

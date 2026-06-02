@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h1 style="font-size:26px;text-align:center;margin-bottom:24px;">{{ header }}</h1>
+
+    <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;margin-bottom:32px;">
+        <div style="text-align:center;padding:16px 24px;background:#def7ec;border-radius:8px;min-width:120px;">
+            <div style="font-size:32px;font-weight:bold;color:#03543f;">{{ success_count }}</div>
+            <div style="font-size:14px;">Thành công</div>
+        </div>
+        <div style="text-align:center;padding:16px 24px;background:#e5e7eb;border-radius:8px;min-width:120px;">
+            <div style="font-size:32px;font-weight:bold;color:#374151;">{{ skipped_count }}</div>
+            <div style="font-size:14px;">Bỏ qua</div>
+        </div>
+        <div style="text-align:center;padding:16px 24px;background:#fde8e8;border-radius:8px;min-width:120px;">
+            <div style="font-size:32px;font-weight:bold;color:#c81e1e;">{{ failed_count }}</div>
+            <div style="font-size:14px;">Thất bại</div>
+        </div>
+    </div>
+
+    {% if success_orders %}
+    <h2 style="font-size:18px;margin-bottom:12px;color:#03543f;">Đơn import thành công</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Mã đơn Odoo</th>
+                <th>Mã PO VinMart</th>
+                <th>Cửa hàng</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for order in success_orders %}
+            <tr>
+                <td>
+                    {% if order.odoo_order_id and odoo_url %}
+                    <a href="{{ odoo_url }}/web#id={{ order.odoo_order_id }}&model=sale.order&view_type=form"
+                       target="_blank" rel="noopener noreferrer"
+                       style="color:#1a56db;font-weight:bold;">
+                        {{ order.odoo_order_name or order.odoo_order_id }}
+                    </a>
+                    {% else %}
+                    {{ order.odoo_order_name or '—' }}
+                    {% endif %}
+                </td>
+                <td>{{ order.order_ref }}</td>
+                <td>{{ order.store_name }} ({{ order.store_code }})</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if failed_orders %}
+    <h2 style="font-size:18px;margin:24px 0 12px;color:#c81e1e;">Đơn thất bại</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Mã PO VinMart</th>
+                <th>Cửa hàng</th>
+                <th>Lý do thất bại</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for order in failed_orders %}
+            <tr>
+                <td>{{ order.order_ref }}</td>
+                <td>{{ order.store_name }} ({{ order.store_code }})</td>
+                <td style="font-size:13px;">{{ order.error_message or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if skipped_orders %}
+    <h2 style="font-size:18px;margin:24px 0 12px;color:#374151;">Đơn bỏ qua</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Mã PO VinMart</th>
+                <th>Lý do bỏ qua</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for order in skipped_orders %}
+            <tr>
+                <td>{{ order.order_ref }}</td>
+                <td style="font-size:13px;">{{ order.error_message or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <div style="margin-top:32px;display:flex;gap:12px;flex-wrap:wrap;">
+        <a href="/upload" class="btn btn-primary">IMPORT FILE MỚI</a>
+        <a href="/history" class="btn btn-secondary">XEM LỊCH SỬ</a>
+    </div>
+</div>
+{% endblock %}

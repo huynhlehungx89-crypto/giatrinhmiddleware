@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        .navbar {
+            background: #1a56db;
+            color: white;
+            padding: 14px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar a { color: white; text-decoration: none; margin-left: 20px; font-size: 15px; }
+        .navbar a:hover { text-decoration: underline; }
+        .container { max-width: 860px; margin: 40px auto; padding: 0 20px; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 32px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+        }
+        h1 { font-size: 22px; margin-bottom: 24px; color: #1a56db; }
+        .btn {
+            display: inline-block;
+            padding: 12px 28px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: bold;
+            text-decoration: none;
+        }
+        .btn-primary { background: #1a56db; color: white; }
+        .btn-primary:hover { background: #1648c0; }
+        .btn-danger { background: #e02424; color: white; }
+        .btn-secondary { background: #6b7280; color: white; }
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .alert-error { background: #fde8e8; color: #c81e1e; border: 1px solid #f8b4b4; }
+        .alert-success { background: #def7ec; color: #03543f; border: 1px solid #84e1bc; }
+        .alert-warning { background: #fdf6b2; color: #723b13; border: 1px solid #faca15; }
+    </style>
+</head>
+<body>
+    {% if user %}
+    <nav class="navbar">
+        <span><strong>{{ app_name }}</strong></span>
+        <div>
+            <a href="/upload">Upload</a>
+            <a href="/history">Lịch sử</a>
+            {% if user.role == 'admin' %}
+            <a href="/settings">Cài đặt</a>
+            <a href="/admin/users">Người dùng</a>
+            {% endif %}
+            <a href="/logout">Đăng xuất ({{ user.username }})</a>
+        </div>
+    </nav>
+    {% endif %}
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h1>📋 Xem trước import — {{ batch.filename }}</h1>
+
+    {% if batch_imported %}
+    <div class="alert alert-warning">
+        Batch này đã được import trước đó. Không thể đẩy lại vào Odoo.
+    </div>
+    {% endif %}
+
+    {% if request.query_params.get('msg') %}
+    <div class="alert alert-warning">{{ request.query_params.get('msg') }}</div>
+    {% endif %}
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:20px 0;padding:16px;background:#f3f4f6;border-radius:8px;">
+        <div><strong>Tổng:</strong> {{ orders|length }}</div>
+        <div><strong>✅ Valid:</strong> {{ batch.valid_orders or 0 }}</div>
+        <div><strong>❌ Error:</strong> {{ batch.error_orders or 0 }}</div>
+        <div><strong>⏭ Skipped:</strong> {{ batch.skipped_orders or 0 }}</div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Mã đơn</th>
+                <th>Cửa hàng</th>
+                <th>Số dòng</th>
+                <th>Trạng thái</th>
+                <th>Lý do lỗi</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for order in orders %}
+            <tr>
+                <td>{{ order.order_ref }}</td>
+                <td>{{ order.store_name }} ({{ order.store_code }})</td>
+                <td>{{ order.line_count }}</td>
+                <td>
+                    {% if order.status == 'VALID' %}
+                    <span class="badge badge-success">VALID</span>
+                    {% elif order.status == 'ERROR' %}
+                    <span class="badge badge-error">ERROR</span>
+                    {% elif order.status == 'SKIPPED' %}
+                    <span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:bold;background:#e5e7eb;color:#374151;">SKIPPED</span>
+                    {% else %}
+                    <span class="badge badge-pending">{{ order.status }}</span>
+                    {% endif %}
+                </td>
+                <td style="font-size:13px;color:#6b7280;">{{ order.error_message or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div style="margin-top:28px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+        {% if valid_count > 0 and not batch_imported %}
+        <form method="post" action="/import/{{ batch.id }}">
+            <button type="submit" class="btn btn-primary">
+                ĐẨY {{ valid_count }} ĐƠN VÀO ODOO
+            </button>
+        </form>
+        {% elif valid_count == 0 %}
+        <div class="alert alert-warning" style="margin:0;">
+            Không có đơn hàng hợp lệ để import.
+        </div>
+        {% endif %}
+
+        <a href="/preview/{{ batch.id }}/errors" class="btn btn-secondary">Tải danh sách lỗi</a>
+        <a href="/upload" class="btn btn-secondary">← Quay lại Upload</a>
+    </div>
+</div>
+{% endblock %}

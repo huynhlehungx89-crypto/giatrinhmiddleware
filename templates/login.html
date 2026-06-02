@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="max-width: 400px; margin: 80px auto;">
+    <div class="card">
+        <h1 style="text-align:center;">🔐 Đăng nhập</h1>
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/login">
+            <div style="margin-bottom: 16px;">
+                <label style="display:block; margin-bottom:6px; font-weight:bold;">Tên đăng nhập</label>
+                <input type="text" name="username" required autofocus
+                    style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:6px; font-size:15px;">
+            </div>
+            <div style="margin-bottom: 24px;">
+                <label style="display:block; margin-bottom:6px; font-weight:bold;">Mật khẩu</label>
+                <input type="password" name="password" required
+                    style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:6px; font-size:15px;">
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%; font-size:16px;">
+                ĐĂNG NHẬP
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

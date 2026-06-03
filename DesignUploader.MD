@@ -126,7 +126,7 @@ odoo-middleware/
 |--------|---------|
 | `VALID` | Ready to import |
 | `ERROR` | Mapping/validation errors |
-| `SKIPPED` | Already exists in Odoo (`client_order_ref`) |
+| `SKIPPED` | Already exists in Odoo (`x_studio_nguoi_mua_ma_po` = PO) |
 
 ### Order statuses (after import)
 
@@ -176,49 +176,103 @@ odoo-middleware/
 - Client cached per settings hash + per HTTP request (`get_odoo_client_for_request`)
 - Timeout: 15s on XML-RPC
 
-### Partner lookup (`core/mapper.py`)
+**Deploy note:** After changing `core/mapper.py` or `core/importer.py`, stop uvicorn completely and restart (`python -m uvicorn main:app --reload --port 8000`). Re-upload Excel so `raw_data` is regenerated; old batches keep the pre-fix JSON schema.
 
-**Important:** `ref` is empty on VinMart partners in this Odoo — use **name** matching.
+### Partner lookup (`core/mapper.py` → `map_order_to_odoo`)
 
-Order of attempts:
+Delivery point is resolved **only** by Excel `store_code` → Odoo field `x_studio_ma_diem_giao` (no name/`ref` fallback).
 
-1. `name ilike` + `customer_rank > 0` (multiple search terms)
-2. `name ilike` without customer_rank (fallback)
-3. Search terms built from: full `store_name`, stripped `WM+ HNI` / `WIN HNI` prefix, suffix after `HNI `
-4. `ref = store_code`
-5. `name ilike store_code`
+1. `search_read('res.partner', [('x_studio_ma_diem_giao', '=', store_code)], ['id','name','parent_id','x_studio_phan_vung'], limit=1)`
+2. If missing → ERROR (Vietnamese message, order not VALID)
+3. `partner_shipping_id` = delivery partner `id`
+4. `partner_id` and `partner_invoice_id` = `parent_id[0]` (parent company); if no parent → ERROR
+5. `company_id` from `x_studio_phan_vung` display name `[1]`:
+   - `Lý Nam Đế` → `1`
+   - `Phạm Văn Đồng` → `2`
+   - other → ERROR
 
-Pick best name match when multiple results; warn if >5 results.
+Example (HongKong Tower): shipping `37345`, parent `36816`, phân vùng `Lý Nam Đế` → `company_id=1`.
 
-### Product lookup
+### Date fields (`order_date` / `delivery_date`)
 
-1. `product.product` barcode
-2. `product.template` barcode → `product_variant_ids[0]`
-3. `product.product` default_code
-4. `product.product` name ilike
+Columns Y/Z may be Excel serial integers. `excel_serial_to_str()` converts serial → `YYYY-MM-DD HH:MM:SS` (epoch 1899-12-30). Parsed `date`/`datetime` from the file parser are also normalized. Values are stored in `raw_data` as `order_date` and `delivery_date`; importer sends them as `date_order` and `commitment_date`.
 
-Stores: `odoo_product_id`, `odoo_product_name`, `uom_id` in mapped line dict.
+### Product lookup (per line)
 
-### Duplicate check
+Stop at first match (logs `[mapper] product attempt N`):
 
-`sale.order` where `client_order_ref = order_ref`
+1. `product.product` where `barcode = product_barcode`
+2. `product.template` where `barcode = product_barcode` → `product_variant_ids[0]`
+3. `product.product` where `default_code = product_barcode`
+4. `product.product` where `name ilike product_name`
+
+On success: `odoo_product_id`, `odoo_template_id` (from `product_tmpl_id`), optional `uom_id`. On failure: `lookup_error` (Vietnamese); line kept in `raw_data` with `odoo_product_id=null`.
+
+### Mapped `raw_data` JSON (saved on upload)
+
+`routes/upload.py` persists the full dict from `map_order_to_odoo()` via `json.dumps(order)` — same keys importer reads. **Do not import batches uploaded before the mapper fix** (legacy keys: `odoo_partner_id`, `partner_match_method`, lines without `product_barcode`).
+
+| Top-level key | Purpose |
+|---------------|---------|
+| `order_ref`, `store_code`, `store_name` | From Excel / grouping |
+| `partner_id`, `partner_invoice_id`, `partner_shipping_id`, `company_id` | Required for import |
+| `partner_shipping_name`, `x_studio_phan_vung` | Metadata |
+| `order_date`, `delivery_date` | Odoo datetime strings |
+| `lines[]` | See below |
+| `errors`, `warnings`, `already_exists`, `status` | Validation (`VALID` / `ERROR` / `SKIPPED`) |
+
+Each `lines[]` item:
+
+| Key | Purpose |
+|-----|---------|
+| `product_barcode`, `product_name`, `quantity`, `unit_price` | From Excel |
+| `odoo_product_id`, `odoo_template_id`, `uom_id` | Odoo resolution |
+| `lookup_error` | Set when product not found |
+
+Table columns `store_code`, `store_name`, `order_date`, `delivery_date` on `import_orders` still come from grouped Excel rows; Odoo IDs live in `raw_data`.
+
+### Duplicate check (`core/validator.py`)
+
+`sale.order` where `x_studio_nguoi_mua_ma_po = order_ref` (`order_exists_in_odoo`). Also used at map time for `already_exists` / SKIPPED preview.
+
+`client_order_ref` is **not** used anywhere in import or duplicate logic.
 
 ### Import (`core/importer.py`)
 
-**sale.order fields:**
+Pre-checks: `partner_id` and `company_id` must be non-null in `raw_data`; else FAILED without creating SO.
 
-- `partner_id`, `company_id` (optional retry without company)
-- `client_order_ref`, `date_order`, `commitment_date` as `YYYY-MM-DD HH:MM:SS`
-- `note`: `"Import từ VinMart"`
+**`sale.order` create payload (exact fields only):**
 
-**sale.order.line fields:**
+| Field | Source |
+|-------|--------|
+| `x_studio_nguoi_mua_ma_po` | `order_ref` (VinMart PO) |
+| `partner_id` | mapped parent company |
+| `partner_invoice_id` | same as `partner_id` |
+| `partner_shipping_id` | mapped delivery point |
+| `company_id` | `1` or `2` |
+| `date_order` | `raw_data.order_date` |
+| `commitment_date` | `raw_data.delivery_date` |
+| `note` | `"Import từ VinMart"` |
 
-- `order_id`, `product_id`, `product_uom_qty` (float), `price_unit` (float)
-- `product_uom_id` if uom_id known (Odoo 19 field name)
+**`sale.order.line` create** (per VALID line with `odoo_product_id`):
+
+1. Base: `order_id`, `product_id`, `product_template_id`, `product_uom_qty`, `price_unit`, optional `product_uom` if `uom_id` set
+2. On failure: retry without `product_template_id`
+3. On failure: retry without `product_uom`
+
+Skip lines with `odoo_product_id=null`. Outcomes: `SUCCESS` (all lines), `PARTIAL_SUCCESS` (some failed), `FAILED` (SO created but 0 lines, or SO create failed).
 
 SO id + name saved to DB immediately after SO create, before lines.
 
-### Verified import (2026-06-02)
+### Verified mapping (2026-06-03, post-fix)
+
+| VinMart PO | store_code | partner_id | partner_shipping_id | company_id |
+|------------|------------|------------|---------------------|------------|
+| 4121618345 | 3608 | 36816 | 37345 | 1 |
+
+Lines include `product_barcode` (e.g. `1101196000000`) and `odoo_product_id` (e.g. `17544`). Legacy `odoo_partner_id` / `partner_match_method` absent.
+
+### Earlier verified import (2026-06-02, pre-fix mapper)
 
 | VinMart PO | Odoo SO | Partner |
 |------------|---------|---------|
@@ -399,9 +453,9 @@ python test_parser.py
 
 ## 12. Known issues / backlog
 
-1. **Store 2BP9** (`WIN HNI 27A1 Green Stars`) — no matching partner in Odoo; order stays ERROR until master data fixed.
-2. VinMart Excel uses `WM+ HNI` prefix; Odoo often has `WIN HNI` — mapper strips prefixes for search.
-3. `uvicorn` may not be on PATH on Windows; use `python -m uvicorn`.
+1. **Store 2BP9** (`WIN HNI 27A1 Green Stars`) — no `x_studio_ma_diem_giao` match in Odoo; order stays ERROR until master data fixed.
+2. **Stale batches:** Re-upload after mapper/importer changes; `import` reads stored `raw_data` and does not re-map.
+3. `uvicorn` may not be on PATH on Windows; use `python -m uvicorn`; full restart required if old code stayed in memory.
 4. Odoo may contain **duplicate `hr.employee` names** — sync dedupes by slug (lowest id); run **cleanup** if old `_2`/`_3` accounts remain in DB.
 5. Future: scheduled imports, confirm SO in Odoo workflow.
 
@@ -445,6 +499,14 @@ python test_parser.py
 4. Odoo employee dedupe by slug (lowest id) — no per-duplicate `_2` accounts on sync
 5. `POST /admin/users/cleanup` — remove legacy `*_2`, `*_3`, `admin_2` (respects import history)
 6. Commit `8a90c84` — admin user management and Odoo employee sync
+
+### 2026-06-03 — VinMart mapping + import alignment
+
+1. Partner lookup by `x_studio_ma_diem_giao` = `store_code`; parent → `partner_id` / invoice; phân vùng → `company_id` 1/2
+2. Product lines: barcode chain + `product_barcode` / `odoo_template_id` in `raw_data`
+3. Excel serial date conversion; SO field `x_studio_nguoi_mua_ma_po` (removed `client_order_ref`)
+4. Line create with `product_template_id` and 3-step fallback; duplicate check on `x_studio_nguoi_mua_ma_po`
+5. Commit `113706d` — mapper/importer/validator rewrite
 
 ---
 

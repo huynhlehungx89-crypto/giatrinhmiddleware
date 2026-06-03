@@ -120,7 +120,18 @@ async def users_sync(request: Request):
             emp_id = emp["id"]
             emp_name = emp["name"]
 
-            if get_user_by_odoo_employee_id(emp_id):
+            linked = get_user_by_odoo_employee_id(emp_id)
+            if linked:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET odoo_employee_id = ?,
+                        odoo_employee_name = ?,
+                        display_name = COALESCE(display_name, ?)
+                    WHERE id = ?
+                    """,
+                    (emp_id, emp_name, emp_name, linked["id"]),
+                )
                 existed += 1
                 continue
 
@@ -132,7 +143,18 @@ async def users_sync(request: Request):
                 existed += 1
                 continue
 
-            if get_user_by_username_any(base_slug):
+            by_username = get_user_by_username_any(base_slug)
+            if by_username:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET odoo_employee_id = ?,
+                        odoo_employee_name = ?,
+                        display_name = COALESCE(display_name, ?)
+                    WHERE id = ?
+                    """,
+                    (emp_id, emp_name, emp_name, by_username["id"]),
+                )
                 existed += 1
                 continue
 

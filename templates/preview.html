@@ -91,7 +91,7 @@
 
     <div class="preview-actions">
         {% if valid_count > 0 and not batch_imported %}
-        <form method="post" action="/import/{{ batch.id }}">
+        <form method="post" action="/import/{{ batch.id }}" id="importForm">
             <button type="submit" class="btn btn-primary">
                 ĐẨY {{ valid_count }} ĐƠN VÀO ODOO
             </button>
@@ -115,4 +115,11 @@
         <a href="/upload" class="btn btn-primary">← Quay lại Upload</a>
     </div>
 </div>
+{% if valid_count > 0 and not batch_imported %}
+<script>
+document.getElementById('importForm').addEventListener('submit', function() {
+    showLoader('Đang đẩy đơn hàng vào Odoo...');
+});
+</script>
+{% endif %}
 {% endblock %}

@@ -40,9 +40,29 @@ async def run_import(request: Request, batch_id: str):
         if status not in IMPORTABLE_STATUSES:
             return RedirectResponse(url=f"/preview/{batch_id}", status_code=302)
 
+        employee_id = None
+        conn = database.get_db()
+        emp_row = conn.execute(
+            "SELECT odoo_employee_id FROM users WHERE id = ?",
+            (user["id"],),
+        ).fetchone()
+        conn.close()
+        if emp_row and emp_row["odoo_employee_id"] is not None:
+            employee_id = int(emp_row["odoo_employee_id"])
+            print(
+                f"[import] salesperson employee_id={employee_id} "
+                f"user={user.get('username')}"
+            )
+        else:
+            print(
+                f"[import] WARNING: user {user.get('username')} "
+                f"has no odoo_employee_id — x_studio_nhan_vien_ban_hang "
+                f"will not be set"
+            )
+
         try:
             odoo_client = get_odoo_client_for_request()
-            import_batch(batch_id, odoo_client)
+            import_batch(batch_id, odoo_client, employee_id=employee_id)
         except Exception as exc:
             logger.exception("Odoo import failed for batch %s: %s", batch_id, exc)
             mark_valid_orders_failed(

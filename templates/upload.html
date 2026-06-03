@@ -8,7 +8,7 @@
     {% if error %}
     <div class="alert alert-error">{{ error }}</div>
     {% endif %}
-    <form method="post" action="/upload" enctype="multipart/form-data">
+    <form method="post" action="/upload" enctype="multipart/form-data" id="uploadForm">
         <div style="margin-bottom:24px;">
             <input type="file" name="file" accept=".xlsx,.xls,.csv" required
                 style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
@@ -21,4 +21,9 @@
     </p>
     {% endif %}
 </div>
+<script>
+document.getElementById('uploadForm').addEventListener('submit', function() {
+    showLoader('Đang xử lý file và kết nối Odoo...');
+});
+</script>
 {% endblock %}

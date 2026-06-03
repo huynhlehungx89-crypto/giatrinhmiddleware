@@ -1,7 +1,7 @@
 # DesignUploader — VinMart → Odoo Middleware
 
 > **Living design document** for the `odoo-middleware` project.  
-> Last updated: 2026-06-02 (admin user sync + duplicate cleanup).
+> Last updated: 2026-06-03 (salesperson on SO, page loader, admin employee id).
 
 ---
 
@@ -78,7 +78,7 @@ odoo-middleware/
 │   ├── admin.py            # /admin/users — sync, cleanup, edit, reset password
 │   └── debug.py            # GET /debug/odoo (APP_ENV=development, admin only)
 │
-├── templates/              # base, login, upload, preview, result, history, settings
+├── templates/              # base (loader), login, upload, preview, result, history, settings
 │   └── admin/              # users.html, user_edit.html
 ├── static/style.css
 ├── data/                   # GITIGNORED — app.db
@@ -99,7 +99,8 @@ odoo-middleware/
     → /preview/{batch_id}
 
 /preview → POST /import/{batch_id}
-    → import_batch() — create sale.order + sale.order.line
+    → read current user's users.odoo_employee_id
+    → import_batch(..., employee_id) — create sale.order + sale.order.line
     → /result/{batch_id}
 
 /history → link to /result or /preview
@@ -253,6 +254,15 @@ Pre-checks: `partner_id` and `company_id` must be non-null in `raw_data`; else F
 | `date_order` | `raw_data.order_date` |
 | `commitment_date` | `raw_data.delivery_date` |
 | `note` | `"Import từ VinMart"` |
+| `x_studio_nhan_vien_ban_hang` | *(optional)* logged-in user's `users.odoo_employee_id` (`hr.employee` id) |
+
+**Salesperson (`routes/import_.py` → `import_batch`)**
+
+1. After auth, `SELECT odoo_employee_id FROM users WHERE id = ?` (current session user).
+2. Pass `employee_id` into `import_batch` → `_import_one_order`.
+3. If `employee_id` is set: `so_payload['x_studio_nhan_vien_ban_hang'] = employee_id` (Many2one to `hr.employee`).
+4. If `None`: field omitted (no error); log `[import] WARNING: user … has no odoo_employee_id`.
+5. User must be synced from Odoo (`POST /admin/users/sync`) so `odoo_employee_id` is populated.
 
 **`sale.order.line` create** (per VALID line with `odoo_product_id`):
 
@@ -326,7 +336,7 @@ line_count, status, error_message, odoo_order_id, odoo_order_name, raw_data (JSO
 | POST | `/upload` | user | Parse + map + save batch |
 | GET | `/preview/{batch_id}` | user | Preview table |
 | GET | `/preview/{batch_id}/errors` | user | CSV download |
-| POST | `/import/{batch_id}` | user | Run import |
+| POST | `/import/{batch_id}` | user | Run import (sets salesperson from `odoo_employee_id`) |
 | GET | `/result/{batch_id}` | user | Result screen |
 | GET | `/history` | user | Batch list (admin=all) |
 | GET/POST | `/settings` | admin | Odoo connection |
@@ -346,8 +356,9 @@ line_count, status, error_message, odoo_order_id, odoo_order_name, raw_data (JSO
 
 - **Đồng bộ nhân viên từ Odoo** (blue) — `POST /admin/users/sync`
 - **Dọn dẹp tài khoản trùng** (grey) — `POST /admin/users/cleanup`
-- Table: Username | Họ tên | Vai trò | Trạng thái | Sửa / Reset mật khẩu
+- Table: Username | Họ tên | **Mã NV Odoo** (`odoo_employee_id`) | Vai trò | Trạng thái | Sửa / Reset mật khẩu
 - Flash messages at top of page (`core/flash.py`, cookie `flash_message`, base64 JSON)
+- Slow actions show full-page loader (see §8c)
 
 ### Username generation (`slugify_vietnamese`)
 
@@ -357,13 +368,13 @@ line_count, status, error_message, odoo_order_id, odoo_order_name, raw_data (JSO
 
 ### Sync rules (`POST /admin/users/sync`)
 
-1. Fetch active `hr.employee` (`core/odoo_employees.py`, limit 2000).
+1. Fetch active `hr.employee` with `fields=['id', 'name']` (`core/odoo_employees.py`, limit 2000).
 2. **Deduplicate by slugified name** before insert: if multiple Odoo rows share the same slug, keep **lowest `id`** only (`core/user_sync.deduplicate_employees_by_slug`).
 3. For each unique employee:
-   - Skip if `odoo_employee_id` already linked to a user → count **đã tồn tại**
+   - If `odoo_employee_id` already linked → **UPDATE** `odoo_employee_id`, `odoo_employee_name`, `display_name` (COALESCE); count **đã tồn tại**
    - Skip if slug is `admin` or starts with `admin`
-   - Skip if `username` (base slug) already exists → do **not** overwrite or reset password
-   - Else create: `role=user`, `is_active=1`, password = bcrypt(`12345678`), link Odoo fields
+   - If `username` (base slug) already exists → **UPDATE** Odoo link fields on that user (no password reset); count **đã tồn tại**
+   - Else **INSERT**: `role=user`, `is_active=1`, password = bcrypt(`12345678`), `odoo_employee_id=emp['id']`, names
 4. **No `_2` / `_3` suffixes during sync** — one account per unique slugified name.
 5. On Odoo connection failure: flash error, **no users created**.
 6. Empty employee list: warning flash, no creates.
@@ -399,9 +410,34 @@ Removes mistaken duplicate accounts from earlier syncs that used `_2`, `_3` suff
 
 ### Admin safety
 
-- Sync never modifies existing users (password, role, username)
+- Sync never changes password, role, or username on existing users
+- Sync **does** refresh `odoo_employee_id` / names on match (needed for import salesperson field)
 - Admin accounts never deleted by cleanup
 - Reset password on non-admin rows sets `12345678` (with confirm dialog)
+
+---
+
+## 8c. Page loader (UX)
+
+Implemented in `templates/base.html` (all pages extend it). No extra JS libraries.
+
+| Mechanism | Behaviour |
+|-----------|-----------|
+| `#page-loader` | Fixed overlay, spinner, `#loader-message` |
+| `showLoader(msg)` / `hideLoader()` | Global helpers |
+| `window.load` + `pageshow` | Auto-hide when page ready or browser Back |
+| Internal `<a href="/…">` clicks | `showLoader('Đang tải...')` |
+
+**Action-specific messages** (submit / confirm before POST):
+
+| Page | Trigger | Message |
+|------|---------|---------|
+| `upload.html` | Upload form submit | `Đang xử lý file và kết nối Odoo...` |
+| `preview.html` | Import to Odoo form | `Đang đẩy đơn hàng vào Odoo...` |
+| `admin/users.html` | Sync (after confirm) | `Đang đồng bộ nhân viên từ Odoo...` |
+| `admin/users.html` | Cleanup (after confirm) | `Đang dọn dẹp tài khoản...` |
+
+Existing confirm dialogs and button disable logic on admin sync/cleanup are unchanged.
 
 ---
 
@@ -469,7 +505,8 @@ python test_parser.py
 | Group orders | `core/file_parser.py` | `group_rows_into_orders` |
 | Odoo mapping | `core/mapper.py` | `map_order_to_odoo` |
 | Classify | `core/validator.py` | `validate_batch` |
-| Import | `core/importer.py` | `import_batch` |
+| Import | `core/importer.py` | `import_batch` (optional `employee_id`) |
+| Import route | `routes/import_.py` | `run_import` — resolves `odoo_employee_id` |
 | Odoo RPC | `core/odoo_client.py` | `OdooClient.search_read` |
 | Slug username | `core/auth.py` | `slugify_vietnamese` |
 | Employee list | `core/odoo_employees.py` | `get_employee_list` |
@@ -507,6 +544,14 @@ python test_parser.py
 3. Excel serial date conversion; SO field `x_studio_nguoi_mua_ma_po` (removed `client_order_ref`)
 4. Line create with `product_template_id` and 3-step fallback; duplicate check on `x_studio_nguoi_mua_ma_po`
 5. Commit `113706d` — mapper/importer/validator rewrite
+6. Commit `0c27114` — DesignUploader sync with mapping docs
+
+### 2026-06-03 — Salesperson + UX loader + employee id on sync
+
+1. `POST /import/{batch_id}` passes `users.odoo_employee_id` → `x_studio_nhan_vien_ban_hang` on `sale.order` (optional)
+2. `POST /admin/users/sync` stores/updates `hr.employee.id` in `users.odoo_employee_id`; list column **Mã NV Odoo**
+3. Full-page loader in `base.html` for navigation, upload, import, sync, cleanup
+4. `database._migrate_users_table`: `odoo_employee_id INTEGER DEFAULT NULL` (idempotent)
 
 ---
 

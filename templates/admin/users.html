@@ -24,6 +24,7 @@
             <tr>
                 <th>Username</th>
                 <th>Họ tên</th>
+                <th>Mã NV Odoo</th>
                 <th>Vai trò</th>
                 <th>Trạng thái</th>
                 <th>Thao tác</th>
@@ -34,6 +35,7 @@
             <tr>
                 <td><code>{{ u.username }}</code></td>
                 <td>{{ u.display_name or u.odoo_employee_name or '—' }}</td>
+                <td>{{ u.odoo_employee_id or '—' }}</td>
                 <td>{{ u.role }}</td>
                 <td>
                     {% if u.is_active %}
@@ -59,7 +61,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="5" style="text-align:center;color:#6b7280;padding:24px;">
+                <td colspan="6" style="text-align:center;color:#6b7280;padding:24px;">
                     Chưa có người dùng. Nhấn đồng bộ từ Odoo để tạo tài khoản.
                 </td>
             </tr>
@@ -74,6 +76,7 @@ function confirmSync(e) {
         e.preventDefault();
         return false;
     }
+    showLoader('Đang đồng bộ nhân viên từ Odoo...');
     var btn = document.getElementById('syncBtn');
     btn.disabled = true;
     btn.textContent = '⏳ Đang đồng bộ...';
@@ -85,6 +88,7 @@ function confirmCleanup(e) {
         e.preventDefault();
         return false;
     }
+    showLoader('Đang dọn dẹp tài khoản...');
     var btn = document.getElementById('cleanupBtn');
     btn.disabled = true;
     btn.textContent = '⏳ Đang dọn dẹp...';

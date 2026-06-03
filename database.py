@@ -90,7 +90,7 @@ def _migrate_users_table(cursor):
     """Add columns for Odoo employee sync (safe on existing DBs)."""
     existing = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
     migrations = [
-        ("odoo_employee_id", "INTEGER"),
+        ("odoo_employee_id", "INTEGER DEFAULT NULL"),
         ("odoo_employee_name", "TEXT"),
         ("display_name", "TEXT"),
     ]

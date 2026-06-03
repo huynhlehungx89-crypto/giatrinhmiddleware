@@ -154,6 +154,7 @@ def _import_one_order(
     order_row: Dict,
     mapped: Dict,
     conn,
+    employee_id: Optional[int] = None,
 ) -> Dict:
     order_id = order_row["id"]
     order_ref = str(order_row.get("order_ref", "")).strip()
@@ -213,6 +214,8 @@ def _import_one_order(
         "commitment_date": order["commitment_date"],
         "note": IMPORT_NOTE,
     }
+    if employee_id:
+        so_payload["x_studio_nhan_vien_ban_hang"] = employee_id
     print(f"[importer] SO payload: {so_payload}")
 
     try:
@@ -274,7 +277,11 @@ def _import_one_order(
     }
 
 
-def import_batch(batch_id: str, odoo_client: Any) -> Dict:
+def import_batch(
+    batch_id: str,
+    odoo_client: Any,
+    employee_id: Optional[int] = None,
+) -> Dict:
     """Import all VALID orders in a batch into Odoo."""
     results: List[Dict] = []
     success_count = 0
@@ -293,7 +300,12 @@ def import_batch(batch_id: str, odoo_client: Any) -> Dict:
 
             try:
                 result = _import_one_order(
-                    odoo_client, batch_id, order_row, mapped, conn
+                    odoo_client,
+                    batch_id,
+                    order_row,
+                    mapped,
+                    conn,
+                    employee_id=employee_id,
                 )
                 results.append(result)
                 st = result.get("status")

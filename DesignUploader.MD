@@ -214,7 +214,7 @@ Stores: `odoo_product_id`, `odoo_product_name`, `uom_id` in mapped line dict.
 **sale.order.line fields:**
 
 - `order_id`, `product_id`, `product_uom_qty` (float), `price_unit` (float)
-- `product_uom` if uom_id known
+- `product_uom_id` if uom_id known (Odoo 19 field name)
 
 SO id + name saved to DB immediately after SO create, before lines.
 

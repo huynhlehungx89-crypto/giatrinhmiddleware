@@ -1,301 +1,286 @@
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from core.validator import order_exists_in_odoo
 
 logger = logging.getLogger(__name__)
 
-
-def _normalize_name(value: str) -> str:
-    return " ".join(str(value or "").lower().split())
+PARTNER_FIELDS = ["id", "name", "parent_id", "x_studio_phan_vung"]
 
 
-def _partner_search_terms(store_name: str) -> List[str]:
-    """Build search strings: full name, without channel prefix, suffix after HNI."""
-    store_name = (store_name or "").strip()
-    terms: List[str] = []
-    if store_name:
-        terms.append(store_name)
-    for prefix in ("WM+ HNI ", "WIN HNI ", "WM+ ", "WIN "):
-        if store_name.startswith(prefix):
-            stripped = store_name[len(prefix) :].strip()
-            if stripped:
-                terms.append(stripped)
-    if " HNI " in store_name:
-        suffix = store_name.split(" HNI ", 1)[-1].strip()
-        if suffix:
-            terms.append(suffix)
-    seen = set()
-    unique: List[str] = []
-    for t in terms:
-        key = t.lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(t)
-    return unique
+def excel_serial_to_str(serial) -> Optional[str]:
+    """Convert Excel serial (e.g. 46175) or date/datetime to Odoo datetime string."""
+    if serial is None or serial == "":
+        return None
+    if isinstance(serial, datetime):
+        return serial.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(serial, date):
+        return serial.strftime("%Y-%m-%d 00:00:00")
+    try:
+        dt = datetime(1899, 12, 30) + timedelta(days=int(float(serial)))
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OverflowError):
+        return str(serial)
 
 
-def _pick_best_partner_match(rows: List[Dict], store_name: str) -> Dict:
-    """Prefer partner whose name is closest to store_name."""
-    target = _normalize_name(store_name)
-    if not rows:
-        return {}
-
-    def score(row: Dict) -> Tuple[int, int]:
-        name = _normalize_name(row.get("name", ""))
-        if name == target:
-            return (0, 0)
-        if target in name or name in target:
-            return (1, abs(len(name) - len(target)))
-        return (2, abs(len(name) - len(target)))
-
-    return min(rows, key=score)
-
-
-def _find_partner(
-    client: Any, store_code: str, store_name: str
-) -> Tuple[Optional[Dict], Optional[str]]:
-    """
-    Returns ({id, name}, method_used).
-  Primary: name ilike store_name + customer_rank > 0
-    """
-    store_name = (store_name or "").strip()
+def _find_partner_by_store_code(
+    client: Any, store_code: str
+) -> Optional[Dict]:
+    """partner_shipping via x_studio_ma_diem_giao = store_code."""
     store_code = (store_code or "").strip()
+    if not store_code:
+        return None
+    try:
+        rows = client.search_read(
+            "res.partner",
+            [("x_studio_ma_diem_giao", "=", store_code)],
+            PARTNER_FIELDS,
+            limit=1,
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        logger.exception(
+            "Partner lookup x_studio_ma_diem_giao=%s failed: %s",
+            store_code,
+            exc,
+        )
+        return None
 
-    if store_name:
-        for search_term in _partner_search_terms(store_name):
-            for method_label, domain in [
-                (
-                    "name_ilike_customer",
-                    [("name", "ilike", search_term), ("customer_rank", ">", 0)],
-                ),
-                (
-                    "name_ilike",
-                    [("name", "ilike", search_term)],
-                ),
-            ]:
-                try:
-                    rows = client.search_read(
-                        "res.partner",
-                        domain,
-                        ["id", "name", "ref"],
-                        limit=10,
-                    )
-                    if len(rows) > 5:
-                        logger.warning(
-                            "Tìm thấy %s kết quả cho %s (term=%s), dùng kết quả phù hợp nhất",
-                            len(rows),
-                            store_name,
-                            search_term,
-                        )
-                    if rows:
-                        best = _pick_best_partner_match(rows, store_name)
-                        logger.info(
-                            "Odoo partner match [%s] via %s term=%r → id=%s name=%s",
-                            store_code,
-                            method_label,
-                            search_term,
-                            best.get("id"),
-                            best.get("name"),
-                        )
-                        return {
-                            "id": int(best["id"]),
-                            "name": best.get("name", ""),
-                        }, f"{method_label}:{search_term}"
-                except Exception as exc:
-                    logger.warning(
-                        "Partner %s lookup failed (term=%r): %s",
-                        method_label,
-                        search_term,
-                        exc,
-                    )
 
-    if store_code:
+def _map_partner_fields(
+    client: Any, store_code: str, mapped: Dict
+) -> bool:
+    """
+    Populate partner_shipping_id, partner_id, partner_invoice_id, company_id.
+    Returns True on success, False if errors were added.
+    """
+    record = _find_partner_by_store_code(client, store_code)
+    if not record:
+        mapped["errors"].append(
+            f"Không tìm thấy điểm giao có mã '{store_code}' trong Odoo "
+            f"(field x_studio_ma_diem_giao)"
+        )
+        return False
+
+    partner_shipping_id = record["id"]
+
+    parent_raw = record.get("parent_id")
+    if isinstance(parent_raw, (list, tuple)) and len(parent_raw) >= 1:
+        parent_id_value = parent_raw[0]
+    else:
+        parent_id_value = None
+
+    if parent_id_value is None:
+        mapped["errors"].append(
+            f"Điểm giao '{store_code}' chưa có công ty mẹ (parent_id) trong Odoo"
+        )
+        return False
+
+    phan_vung_raw = record.get("x_studio_phan_vung")
+    if isinstance(phan_vung_raw, (list, tuple)) and len(phan_vung_raw) >= 2:
+        phan_vung = phan_vung_raw[1].strip()
+    elif isinstance(phan_vung_raw, str):
+        phan_vung = phan_vung_raw.strip()
+    else:
+        phan_vung = ""
+
+    print(f"[mapper] store={store_code} phan_vung='{phan_vung}'")
+
+    if phan_vung == "Lý Nam Đế":
+        company_id = 1
+    elif phan_vung == "Phạm Văn Đồng":
+        company_id = 2
+    else:
+        mapped["errors"].append(
+            f"Điểm giao '{store_code}' có phân vùng '{phan_vung}' "
+            f"không hợp lệ. Cần là 'Lý Nam Đế' hoặc 'Phạm Văn Đồng'."
+        )
+        return False
+
+    mapped["partner_shipping_id"] = partner_shipping_id
+    mapped["partner_id"] = parent_id_value
+    mapped["partner_invoice_id"] = parent_id_value
+    mapped["company_id"] = company_id
+    mapped["partner_shipping_name"] = record.get("name")
+    mapped["x_studio_phan_vung"] = phan_vung
+    return True
+
+
+def _uom_id_from_row(row: Dict) -> Optional[int]:
+    uom = row.get("uom_id")
+    if isinstance(uom, (list, tuple)) and uom:
+        return int(uom[0])
+    if uom:
+        return int(uom)
+    return None
+
+
+def _fetch_template_id(client: Any, product_id: int) -> Optional[int]:
+    try:
+        rows = client.search_read(
+            "product.product",
+            [("id", "=", product_id)],
+            ["product_tmpl_id"],
+            limit=1,
+        )
+        if not rows:
+            return None
+        tmpl = rows[0].get("product_tmpl_id")
+        if isinstance(tmpl, (list, tuple)) and tmpl:
+            return int(tmpl[0])
+        if tmpl:
+            return int(tmpl)
+        return None
+    except Exception as exc:
+        logger.warning("product_tmpl_id fetch failed for %s: %s", product_id, exc)
+        return None
+
+
+def _find_product(
+    client: Any, product_barcode: str, product_name: str
+) -> Optional[Dict]:
+    """
+    Returns dict with product_id, template_id, uom_id or None.
+    """
+    product_barcode = (product_barcode or "").strip()
+    product_name = (product_name or "").strip()
+
+    def _attempt(n: int, result: Optional[Dict]) -> Optional[Dict]:
+        print(f"[mapper] product attempt {n}: barcode='{product_barcode}' → {result}")
+        return result
+
+    # Attempt 1: product.product barcode
+    if product_barcode:
         try:
             rows = client.search_read(
-                "res.partner",
-                [("ref", "=", store_code)],
-                ["id", "name", "ref"],
+                "product.product",
+                [("barcode", "=", product_barcode)],
+                ["id", "name", "uom_id", "product_tmpl_id"],
                 limit=1,
             )
             if rows:
                 row = rows[0]
-                logger.info(
-                    "Odoo partner match [%s] via ref → id=%s",
-                    store_code,
-                    row["id"],
+                pid = int(row["id"])
+                return _attempt(
+                    1,
+                    {
+                        "product_id": pid,
+                        "template_id": _fetch_template_id(client, pid)
+                        or _template_id_from_row(row),
+                        "uom_id": _uom_id_from_row(row),
+                        "name": row.get("name"),
+                    },
                 )
-                return {"id": int(row["id"]), "name": row.get("name", "")}, "ref"
+            _attempt(1, None)
         except Exception as exc:
-            logger.warning("Partner ref lookup failed: %s", exc)
-
-        try:
-            rows = client.search_read(
-                "res.partner",
-                [
-                    ("name", "ilike", store_code),
-                    ("customer_rank", ">", 0),
-                ],
-                ["id", "name", "ref"],
-                limit=5,
+            print(
+                f"[mapper] product attempt 1: barcode='{product_barcode}' → None ({exc})"
             )
-            if rows:
-                row = rows[0]
-                logger.info(
-                    "Odoo partner match [%s] via name_ilike_code → id=%s",
-                    store_code,
-                    row["id"],
-                )
-                return {"id": int(row["id"]), "name": row.get("name", "")}, "name_ilike_code"
-        except Exception as exc:
-            logger.warning("Partner name_ilike code lookup failed: %s", exc)
 
-    return None, None
-
-
-def _find_product(
-    client: Any,
-    barcode: str,
-    product_name: str,
-    product_code: Optional[str] = None,
-) -> Tuple[Optional[Dict], Optional[str]]:
-    """
-    Returns ({id, name, uom_id}, method_used).
-    """
-    barcode = (barcode or "").strip()
-    product_name = (product_name or "").strip()
-    code = (product_code or barcode or "").strip()
-
-    def _product_from_row(row: Dict, method: str) -> Tuple[Dict, str]:
-        uom_id = row.get("uom_id")
-        if isinstance(uom_id, (list, tuple)) and uom_id:
-            uom_id = int(uom_id[0])
-        elif uom_id:
-            uom_id = int(uom_id)
-        else:
-            uom_id = None
-        info = {
-            "id": int(row["id"]),
-            "name": row.get("name", ""),
-            "uom_id": uom_id,
-        }
-        logger.info(
-            "Odoo product match [%s] via %s → id=%s name=%s",
-            barcode,
-            method,
-            info["id"],
-            info["name"],
-        )
-        return info, method
-
-    if barcode:
-        try:
-            rows = client.search_read(
-                "product.product",
-                [("barcode", "=", barcode)],
-                ["id", "name", "barcode", "default_code", "uom_id"],
-                limit=5,
-            )
-            if len(rows) > 1:
-                logger.warning(
-                    "Tìm thấy nhiều kết quả cho %s, dùng ID đầu tiên",
-                    barcode,
-                )
-            if rows:
-                return _product_from_row(rows[0], "barcode")
-        except Exception as exc:
-            logger.warning("Product barcode lookup failed: %s", exc)
-
+    # Attempt 2: product.template barcode → variant[0]
+    if product_barcode:
         try:
             rows = client.search_read(
                 "product.template",
-                [("barcode", "=", barcode)],
-                ["id", "name", "barcode", "product_variant_ids"],
-                limit=5,
+                [("barcode", "=", product_barcode)],
+                ["id", "product_variant_ids"],
+                limit=1,
             )
-            if rows:
-                tmpl = rows[0]
-                variant_ids = tmpl.get("product_variant_ids") or []
-                if variant_ids:
-                    product_id = int(variant_ids[0])
-                    prows = client.search_read(
-                        "product.product",
-                        [("id", "=", product_id)],
-                        ["id", "name", "uom_id"],
-                        limit=1,
+            if rows and rows[0].get("product_variant_ids"):
+                pid = int(rows[0]["product_variant_ids"][0])
+                prows = client.search_read(
+                    "product.product",
+                    [("id", "=", pid)],
+                    ["id", "name", "uom_id", "product_tmpl_id"],
+                    limit=1,
+                )
+                if prows:
+                    row = prows[0]
+                    return _attempt(
+                        2,
+                        {
+                            "product_id": pid,
+                            "template_id": _fetch_template_id(client, pid)
+                            or int(rows[0]["id"]),
+                            "uom_id": _uom_id_from_row(row),
+                            "name": row.get("name"),
+                        },
                     )
-                    if prows:
-                        return _product_from_row(prows[0], "template_barcode")
+            _attempt(2, None)
         except Exception as exc:
-            logger.warning("Product template barcode lookup failed: %s", exc)
+            print(
+                f"[mapper] product attempt 2: barcode='{product_barcode}' → None ({exc})"
+            )
 
-    if code:
+    # Attempt 3: product.product default_code
+    if product_barcode:
         try:
             rows = client.search_read(
                 "product.product",
-                [("default_code", "=", code)],
-                ["id", "name", "default_code", "uom_id"],
-                limit=5,
+                [("default_code", "=", product_barcode)],
+                ["id", "name", "uom_id", "product_tmpl_id"],
+                limit=1,
             )
             if rows:
-                return _product_from_row(rows[0], "default_code")
+                row = rows[0]
+                pid = int(row["id"])
+                return _attempt(
+                    3,
+                    {
+                        "product_id": pid,
+                        "template_id": _fetch_template_id(client, pid)
+                        or _template_id_from_row(row),
+                        "uom_id": _uom_id_from_row(row),
+                        "name": row.get("name"),
+                    },
+                )
+            _attempt(3, None)
         except Exception as exc:
-            logger.warning("Product default_code lookup failed: %s", exc)
+            print(
+                f"[mapper] product attempt 3: barcode='{product_barcode}' → None ({exc})"
+            )
 
+    # Attempt 4: name ilike
     if product_name:
         try:
             rows = client.search_read(
                 "product.product",
                 [("name", "ilike", product_name)],
-                ["id", "name", "uom_id"],
-                limit=5,
+                ["id", "name", "uom_id", "product_tmpl_id"],
+                limit=1,
             )
             if rows:
-                return _product_from_row(rows[0], "name_ilike")
+                row = rows[0]
+                pid = int(row["id"])
+                return _attempt(
+                    4,
+                    {
+                        "product_id": pid,
+                        "template_id": _fetch_template_id(client, pid)
+                        or _template_id_from_row(row),
+                        "uom_id": _uom_id_from_row(row),
+                        "name": row.get("name"),
+                    },
+                )
+            _attempt(4, None)
         except Exception as exc:
-            logger.warning("Product name_ilike lookup failed: %s", exc)
-
-    return None, None
-
-
-def _get_company(client: Any) -> Optional[Dict]:
-    """Cached default company for this client instance (one Odoo call per batch)."""
-    if getattr(client, "_company_cache", None) is not None:
-        return client._company_cache
-
-    try:
-        rows = client.search_read(
-            "res.company",
-            [],
-            ["id", "name"],
-            limit=1,
-            order="id asc",
-        )
-        company = rows[0] if rows else None
-        client._company_cache = company
-        if company:
-            logger.info(
-                "Odoo company cached → id=%s name=%s",
-                company.get("id"),
-                company.get("name"),
+            print(
+                f"[mapper] product attempt 4: barcode='{product_barcode}' → None ({exc})"
             )
-        return company
-    except Exception as exc:
-        logger.exception("Company lookup failed: %s", exc)
-        client._company_cache = None
-        return None
+    else:
+        _attempt(4, None)
+
+    return None
 
 
-def _check_duplicate_order(client: Any, order_ref: str) -> bool:
-    try:
-        rows = client.search_read(
-            "sale.order",
-            [("client_order_ref", "=", order_ref)],
-            ["id"],
-            limit=1,
-        )
-        return bool(rows)
-    except Exception as exc:
-        logger.exception("Duplicate check failed for %s: %s", order_ref, exc)
-        return False
+def _template_id_from_row(row: Dict) -> Optional[int]:
+    tmpl = row.get("product_tmpl_id")
+    if isinstance(tmpl, (list, tuple)) and tmpl:
+        return int(tmpl[0])
+    if tmpl:
+        return int(tmpl)
+    return None
 
 
 def map_order_to_odoo(order: Dict, odoo_client: Any) -> Dict:
@@ -304,113 +289,102 @@ def map_order_to_odoo(order: Dict, odoo_client: Any) -> Dict:
         store_code = str(order.get("store_code", "")).strip()
         store_name = str(order.get("store_name", "")).strip()
 
-        mapped = {
+        mapped: Dict = {
             "order_ref": order_ref,
-            "odoo_partner_id": None,
-            "odoo_partner_name": None,
-            "odoo_company_id": None,
-            "odoo_company_name": None,
-            "order_date": order.get("order_date"),
-            "delivery_date": order.get("delivery_date"),
+            "store_code": store_code,
+            "store_name": store_name,
+            "partner_shipping_id": None,
+            "partner_shipping_name": None,
+            "partner_id": None,
+            "partner_invoice_id": None,
+            "company_id": None,
+            "x_studio_phan_vung": None,
+            "order_date": excel_serial_to_str(order.get("order_date")),
+            "delivery_date": excel_serial_to_str(order.get("delivery_date")),
             "already_exists": False,
             "lines": [],
             "errors": [],
             "warnings": [],
             "status": "READY",
-            "partner_match_method": None,
-            "line_match_methods": [],
         }
 
-        partner, partner_method = _find_partner(odoo_client, store_code, store_name)
-        mapped["partner_match_method"] = partner_method
-        if partner:
-            mapped["odoo_partner_id"] = partner["id"]
-            mapped["odoo_partner_name"] = partner.get("name")
+        if not store_code:
+            mapped["errors"].append("Thiếu mã điểm giao (store_code) trong file Excel.")
         else:
-            mapped["errors"].append(
-                f"Không tìm thấy cửa hàng: {store_code} - {store_name}"
-            )
+            _map_partner_fields(odoo_client, store_code, mapped)
 
-        company = _get_company(odoo_client)
-        if company:
-            mapped["odoo_company_id"] = int(company["id"])
-            mapped["odoo_company_name"] = company.get("name")
-        else:
-            mapped["errors"].append("Không tìm thấy công ty mặc định trên Odoo.")
-
-        mapped["already_exists"] = _check_duplicate_order(odoo_client, order_ref)
+        mapped["already_exists"] = order_exists_in_odoo(odoo_client, order_ref)
 
         for line in order.get("lines", []):
-            try:
-                barcode = str(line.get("product_barcode", "")).strip()
-                product_name = str(line.get("product_name", "")).strip()
-                product_code = str(line.get("product_code", "") or barcode).strip()
-                quantity = int(line.get("quantity", 0) or 0)
-                unit_price = float(line.get("unit_price", 0.0) or 0.0)
+            barcode = str(line.get("product_barcode", "")).strip()
+            product_name = str(line.get("product_name", "")).strip()
+            quantity = int(line.get("quantity", 0) or 0)
+            unit_price = float(line.get("unit_price", 0.0) or 0.0)
 
-                if quantity <= 0:
-                    mapped["errors"].append(
-                        f"Số lượng không hợp lệ cho sản phẩm: {product_name} (barcode: {barcode})"
-                    )
-                    continue
-
-                if unit_price <= 0:
-                    mapped["warnings"].append(
-                        f"Đơn giá <= 0 cho sản phẩm: {product_name} (barcode: {barcode})"
-                    )
-
-                product, product_method = _find_product(
-                    odoo_client, barcode, product_name, product_code
-                )
-                if not product:
-                    mapped["errors"].append(
-                        f"Không tìm thấy sản phẩm: {product_name} (barcode: {barcode})"
-                    )
-                    continue
-
-                mapped["lines"].append(
-                    {
-                        "odoo_product_id": product["id"],
-                        "odoo_product_name": product.get("name"),
-                        "uom_id": product.get("uom_id"),
-                        "quantity": quantity,
-                        "unit_price": unit_price,
-                        "product_name": product_name,
-                        "match_method": product_method,
-                    }
-                )
-                mapped["line_match_methods"].append(
-                    {"barcode": barcode, "method": product_method}
-                )
-            except Exception as line_exc:
-                logger.exception("Lỗi xử lý dòng đơn %s: %s", order_ref, line_exc)
+            if quantity <= 0:
                 mapped["errors"].append(
-                    f"Lỗi xử lý dòng sản phẩm cho đơn {order_ref}: {str(line_exc)}"
+                    f"Số lượng không hợp lệ cho sản phẩm: {product_name} "
+                    f"(barcode: {barcode})"
                 )
                 continue
 
-        if len(mapped["lines"]) == 0 and not mapped["already_exists"]:
-            mapped["status"] = "ERROR"
-            mapped["errors"].append(
-                f"Đơn hàng {order_ref} không có dòng hợp lệ để import."
-            )
+            if unit_price <= 0:
+                mapped["warnings"].append(
+                    f"Đơn giá <= 0 cho sản phẩm: {product_name} (barcode: {barcode})"
+                )
+
+            product = _find_product(odoo_client, barcode, product_name)
+
+            mapped_line: Dict = {
+                "product_barcode": barcode,
+                "product_name": product_name,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "odoo_product_id": None,
+                "odoo_template_id": None,
+                "uom_id": None,
+                "lookup_error": None,
+            }
+
+            if product:
+                mapped_line["odoo_product_id"] = product["product_id"]
+                mapped_line["odoo_template_id"] = product.get("template_id")
+                mapped_line["uom_id"] = product.get("uom_id")
+            else:
+                mapped_line["lookup_error"] = (
+                    f"Không tìm thấy sản phẩm: barcode='{barcode}' "
+                    f"tên='{product_name}'"
+                )
+                mapped["errors"].append(mapped_line["lookup_error"])
+
+            mapped["lines"].append(mapped_line)
+
+        if not any(ln.get("odoo_product_id") for ln in mapped["lines"]):
+            if not mapped["already_exists"]:
+                mapped["status"] = "ERROR"
+                if not any("sản phẩm" in e for e in mapped["errors"]):
+                    mapped["errors"].append(
+                        f"Đơn hàng {order_ref} không có dòng sản phẩm hợp lệ để import."
+                    )
 
         logger.info(
-            "Map đơn %s: lines=%s errors=%s partner_method=%s exists=%s",
+            "Map đơn %s: partner=%s company=%s lines=%s errors=%s",
             order_ref,
+            mapped.get("partner_shipping_id"),
+            mapped.get("company_id"),
             len(mapped["lines"]),
             len(mapped["errors"]),
-            partner_method,
-            mapped["already_exists"],
         )
         return mapped
+
     except Exception as exc:
-        logger.exception("Lỗi map đơn hàng %s: %s", order.get("order_ref"), exc)
+        logger.exception("Lỗi map đơn %s: %s", order.get("order_ref"), exc)
         return {
             "order_ref": str(order.get("order_ref", "")),
-            "odoo_partner_id": None,
-            "odoo_partner_name": None,
-            "odoo_company_id": None,
+            "partner_shipping_id": None,
+            "partner_id": None,
+            "partner_invoice_id": None,
+            "company_id": None,
             "already_exists": False,
             "lines": [],
             "errors": [f"Lỗi hệ thống khi mapping đơn hàng: {str(exc)}"],

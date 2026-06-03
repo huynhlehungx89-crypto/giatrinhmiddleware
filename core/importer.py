@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import database
@@ -14,73 +14,6 @@ IMPORT_NOTE = "Import từ VinMart"
 def _log_odoo_call(action: str, **kwargs) -> None:
     safe = {k: v for k, v in kwargs.items() if k != "api_key"}
     logger.info("[%s] Odoo API: %s %s", datetime.now().isoformat(), action, safe)
-
-
-def _format_odoo_datetime(value, field_label: str, order_ref: str) -> str:
-    """Odoo datetime: YYYY-MM-DD HH:MM:SS"""
-    if value is None or value == "":
-        logger.warning(
-            "%s thiếu cho đơn %s, dùng ngày hôm nay",
-            field_label,
-            order_ref,
-        )
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    try:
-        if isinstance(value, datetime):
-            return value.strftime("%Y-%m-%d %H:%M:%S")
-        if isinstance(value, date):
-            return value.strftime("%Y-%m-%d 00:00:00")
-        text = str(value).strip()
-        if "T" in text:
-            text = text.replace("T", " ")
-        if len(text) == 10:
-            return f"{text} 00:00:00"
-        if len(text) >= 19:
-            return text[:19]
-        parsed = datetime.fromisoformat(text.split(" ")[0])
-        return parsed.strftime("%Y-%m-%d 00:00:00")
-    except Exception as exc:
-        logger.warning(
-            "%s không hợp lệ cho đơn %s (value=%r): %s — dùng hôm nay",
-            field_label,
-            order_ref,
-            value,
-            exc,
-        )
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _safe_int(value, field_name: str, order_ref: str) -> Optional[int]:
-    try:
-        if value is None or value == "":
-            return None
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        logger.error(
-            "Chuyển đổi %s thất bại cho đơn %s: value=%r error=%s",
-            field_name,
-            order_ref,
-            value,
-            exc,
-        )
-        return None
-
-
-def _safe_float(value, field_name: str, order_ref: str) -> Optional[float]:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        logger.error(
-            "Chuyển đổi %s thất bại cho đơn %s: value=%r error=%s",
-            field_name,
-            order_ref,
-            value,
-            exc,
-        )
-        return None
 
 
 def _load_valid_orders(batch_id: str) -> List[Dict]:
@@ -109,14 +42,10 @@ def _order_imported_locally(conn, order_id: str) -> bool:
 
 
 def _exists_in_odoo(odoo_client: Any, order_ref: str) -> bool:
+    from core.validator import order_exists_in_odoo
+
     _log_odoo_call("sale.order search duplicate", order_ref=order_ref)
-    rows = odoo_client.search_read(
-        "sale.order",
-        [("client_order_ref", "=", order_ref)],
-        ["id"],
-        limit=1,
-    )
-    return bool(rows)
+    return order_exists_in_odoo(odoo_client, order_ref)
 
 
 def _save_order_result(
@@ -151,6 +80,74 @@ def _read_order_name(odoo_client: Any, so_id: int) -> str:
     return str(so_id)
 
 
+def _create_sale_order_line(odoo_client: Any, line_payload: Dict) -> int:
+    return int(
+        odoo_client.execute_kw("sale.order.line", "create", [line_payload])
+    )
+
+
+def _import_order_lines(
+    odoo_client: Any, odoo_order_id: int, lines: List[Dict]
+) -> tuple[int, int]:
+    """Create sale.order.line records. Returns (created_lines, failed_lines)."""
+    total_lines = len(lines)
+    created_lines = 0
+    failed_lines = 0
+
+    for line in lines:
+        if line.get("odoo_product_id") is None:
+            print(f"[importer] SKIP line: {line.get('lookup_error')}")
+            failed_lines += 1
+            continue
+
+        line_payload = {
+            "order_id": odoo_order_id,
+            "product_id": line["odoo_product_id"],
+            "product_template_id": line.get("odoo_template_id"),
+            "product_uom_qty": float(line["quantity"]),
+            "price_unit": float(line["unit_price"]),
+        }
+        if line.get("uom_id"):
+            line_payload["product_uom"] = line["uom_id"]
+
+        print(f"[importer] line payload: {line_payload}")
+
+        try:
+            line_id = _create_sale_order_line(odoo_client, line_payload)
+            print(f"[importer] line created id={line_id}")
+            created_lines += 1
+            continue
+        except Exception as exc:
+            print(f"[importer] line attempt 1 failed: {exc}")
+
+        line_payload2 = {
+            k: v
+            for k, v in line_payload.items()
+            if k != "product_template_id"
+        }
+        try:
+            line_id = _create_sale_order_line(odoo_client, line_payload2)
+            print(f"[importer] line created (attempt 2) id={line_id}")
+            created_lines += 1
+            continue
+        except Exception as exc:
+            print(f"[importer] line attempt 2 failed: {exc}")
+
+        line_payload3 = {
+            k: v for k, v in line_payload2.items() if k != "product_uom"
+        }
+        try:
+            line_id = _create_sale_order_line(odoo_client, line_payload3)
+            print(f"[importer] line created (attempt 3 no uom) id={line_id}")
+            created_lines += 1
+            continue
+        except Exception as exc:
+            print(f"[importer] line attempt 3 failed: {exc}")
+            failed_lines += 1
+
+    return created_lines, failed_lines
+
+
 def _import_one_order(
     odoo_client: Any,
     batch_id: str,
@@ -175,7 +172,7 @@ def _import_one_order(
             conn,
             order_id,
             "SKIPPED",
-            error_message="Đơn đã tồn tại trên Odoo (client_order_ref trùng).",
+            error_message="Đơn đã tồn tại trên Odoo (mã PO trùng).",
         )
         return {
             "order_ref": order_ref,
@@ -184,137 +181,94 @@ def _import_one_order(
             "error_message": "Đơn đã tồn tại trên Odoo.",
         }
 
-    partner_id = _safe_int(
-        mapped.get("odoo_partner_id"), "partner_id", order_ref
-    )
-    if not partner_id:
-        msg = "Thiếu partner_id Odoo hợp lệ, không thể tạo đơn hàng."
+    if mapped.get("partner_id") is None:
+        msg = (
+            "; ".join(mapped.get("errors") or [])
+            or "Thiếu partner_id (công ty mẹ), không thể tạo đơn hàng."
+        )
         _save_order_result(conn, order_id, "FAILED", error_message=msg)
         return {"order_ref": order_ref, "status": "FAILED", "error_message": msg}
 
-    company_id = _safe_int(
-        mapped.get("odoo_company_id"), "company_id", order_ref
-    )
+    if mapped.get("company_id") is None:
+        msg = (
+            "; ".join(mapped.get("errors") or [])
+            or "Thiếu company_id (phân vùng), không thể tạo đơn hàng."
+        )
+        _save_order_result(conn, order_id, "FAILED", error_message=msg)
+        return {"order_ref": order_ref, "status": "FAILED", "error_message": msg}
 
-    date_order = _format_odoo_datetime(
-        mapped.get("order_date") or order_row.get("order_date"),
-        "date_order",
-        order_ref,
-    )
-    commitment_date = _format_odoo_datetime(
-        mapped.get("delivery_date") or order_row.get("delivery_date"),
-        "commitment_date",
-        order_ref,
-    )
+    order = {
+        "order_ref": order_ref,
+        "date_order": mapped.get("order_date"),
+        "commitment_date": mapped.get("delivery_date"),
+    }
 
-    so_vals: Dict[str, Any] = {
-        "partner_id": partner_id,
-        "client_order_ref": order_ref,
-        "date_order": date_order,
-        "commitment_date": commitment_date,
+    so_payload = {
+        "x_studio_nguoi_mua_ma_po": order["order_ref"],
+        "partner_id": mapped["partner_id"],
+        "partner_invoice_id": mapped["partner_invoice_id"],
+        "partner_shipping_id": mapped["partner_shipping_id"],
+        "company_id": mapped["company_id"],
+        "date_order": order["date_order"],
+        "commitment_date": order["commitment_date"],
         "note": IMPORT_NOTE,
     }
-    if company_id:
-        so_vals["company_id"] = company_id
+    print(f"[importer] SO payload: {so_payload}")
 
-    so_id: Optional[int] = None
     try:
-        _log_odoo_call("sale.order create", order_ref=order_ref, partner_id=partner_id)
-        so_id = int(odoo_client.execute_kw("sale.order", "create", [so_vals]))
+        _log_odoo_call("sale.order create", order_ref=order_ref, so_vals=so_payload)
+        so_id = int(odoo_client.execute_kw("sale.order", "create", [so_payload]))
     except Exception as exc:
-        if company_id:
-            logger.warning(
-                "Tạo SO với company_id thất bại đơn %s, thử không company_id: %s",
-                order_ref,
-                exc,
-            )
-            try:
-                so_vals_no_co = {k: v for k, v in so_vals.items() if k != "company_id"}
-                so_id = int(
-                    odoo_client.execute_kw("sale.order", "create", [so_vals_no_co])
-                )
-            except Exception as exc2:
-                exc = exc2
-        if so_id is None:
-            msg = f"Không tạo được đơn bán hàng trên Odoo: {str(exc)}"
-            logger.exception("Create SO failed for %s", order_ref)
-            _save_order_result(conn, order_id, "FAILED", error_message=msg)
-            return {"order_ref": order_ref, "status": "FAILED", "error_message": msg}
+        msg = f"Không tạo được đơn bán hàng trên Odoo: {str(exc)}"
+        logger.exception("Create SO failed for %s vals=%s", order_ref, so_payload)
+        _save_order_result(conn, order_id, "FAILED", error_message=msg)
+        return {"order_ref": order_ref, "status": "FAILED", "error_message": msg}
 
     so_name = _read_order_name(odoo_client, so_id)
-    _save_order_result(conn, order_id, "SUCCESS", so_id, so_name)
-
-    line_errors: List[str] = []
     lines = mapped.get("lines") or []
+    total_lines = len(lines)
+    created_lines, failed_lines = _import_order_lines(
+        odoo_client, so_id, lines
+    )
 
-    for line in lines:
-        try:
-            product_id = _safe_int(
-                line.get("odoo_product_id"), "product_id", order_ref
-            )
-            qty = _safe_float(line.get("quantity"), "product_uom_qty", order_ref)
-            price = _safe_float(line.get("unit_price"), "price_unit", order_ref)
-
-            if not product_id:
-                line_errors.append(
-                    f"Thiếu product_id cho {line.get('product_name', '')}"
-                )
-                continue
-            if qty is None or qty <= 0:
-                line_errors.append(
-                    f"Số lượng không hợp lệ cho {line.get('product_name', '')}"
-                )
-                continue
-            if price is None:
-                price = 0.0
-
-            line_vals: Dict[str, Any] = {
-                "order_id": so_id,
-                "product_id": product_id,
-                "product_uom_qty": qty,
-                "price_unit": price,
-            }
-            uom_id = _safe_int(line.get("uom_id"), "uom_id", order_ref)
-            if uom_id:
-                line_vals["product_uom"] = uom_id
-
-            _log_odoo_call(
-                "sale.order.line create",
-                order_ref=order_ref,
-                product_id=product_id,
-            )
-            odoo_client.execute_kw("sale.order.line", "create", [line_vals])
-        except Exception as line_exc:
-            logger.exception(
-                "Line create failed order=%s product=%s",
-                order_ref,
-                line.get("product_name"),
-            )
-            line_errors.append(
-                f"{line.get('product_name', '')}: {str(line_exc)}"
-            )
-
-    if line_errors:
-        note = "Một số dòng không tạo được: " + "; ".join(line_errors)
-        _save_order_result(
-            conn,
-            order_id,
-            "PARTIAL_SUCCESS",
-            so_id,
-            so_name,
-            note,
-        )
+    if created_lines == 0 and total_lines > 0:
+        status = "FAILED"
+        error_message = "SO tạo thành công nhưng 0 dòng sản phẩm được tạo."
+        _save_order_result(conn, order_id, status, so_id, so_name, error_message)
         return {
             "order_ref": order_ref,
-            "status": "PARTIAL_SUCCESS",
+            "status": status,
             "odoo_order_name": so_name,
             "odoo_order_id": so_id,
-            "error_message": note,
+            "error_message": error_message,
         }
 
+    if failed_lines > 0:
+        status = "PARTIAL_SUCCESS"
+        error_message = (
+            f"Một số dòng không tạo được ({failed_lines}/{total_lines} dòng thất bại)."
+        )
+        _save_order_result(conn, order_id, status, so_id, so_name, error_message)
+        return {
+            "order_ref": order_ref,
+            "status": status,
+            "odoo_order_name": so_name,
+            "odoo_order_id": so_id,
+            "error_message": error_message,
+        }
+
+    status = "SUCCESS"
+    _save_order_result(conn, order_id, status, so_id, so_name)
+    logger.info(
+        "Order %s imported: SO %s with %s/%s line(s)",
+        order_ref,
+        so_name,
+        created_lines,
+        total_lines,
+    )
     return {
         "order_ref": order_ref,
-        "status": "SUCCESS",
+        "status": status,
         "odoo_order_name": so_name,
         "odoo_order_id": so_id,
     }

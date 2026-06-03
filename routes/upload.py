@@ -67,7 +67,10 @@ def _save_batch_to_db(
     for order in summary["orders"]:
         order_ref = order.get("order_ref", "")
         source = grouped_by_ref.get(order_ref, {})
-        error_message = "; ".join(order.get("errors", []))
+        if order.get("status") == "SKIPPED" and order.get("error_message"):
+            error_message = order["error_message"]
+        else:
+            error_message = "; ".join(order.get("errors", []))
         if order.get("warnings"):
             warn_text = "; ".join(order["warnings"])
             error_message = f"{error_message}; {warn_text}".strip("; ")

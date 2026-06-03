@@ -13,6 +13,25 @@ import database
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
+SKIPPED_REASON = (
+    "Đơn hàng này đã được import trước đó (mã SO đã tồn tại trong Odoo)"
+)
+SKIPPED_TOOLTIP = (
+    "Đơn đã tồn tại trong Odoo, hệ thống bỏ qua để tránh trùng lặp"
+)
+SKIPPED_SUMMARY_TOOLTIP = "Đã tồn tại trong Odoo"
+
+
+def _enrich_orders_for_display(orders: list) -> list:
+    """Ensure SKIPPED rows show a friendly reason in the preview table."""
+    enriched = []
+    for order in orders:
+        row = dict(order)
+        if row.get("status") == "SKIPPED" and not (row.get("error_message") or "").strip():
+            row["error_message"] = SKIPPED_REASON
+        enriched.append(row)
+    return enriched
+
 
 def _load_batch(batch_id: str):
     conn = database.get_db()
@@ -42,6 +61,7 @@ async def preview_page(request: Request, batch_id: str):
 
     batch_imported = batch.get("status") in ("IMPORTED", "PARTIAL", "FAILED")
     valid_count = batch.get("valid_orders") or 0
+    orders = _enrich_orders_for_display(orders)
 
     return templates.TemplateResponse(
         "preview.html",
@@ -53,6 +73,9 @@ async def preview_page(request: Request, batch_id: str):
             "orders": orders,
             "batch_imported": batch_imported,
             "valid_count": valid_count,
+            "skipped_reason": SKIPPED_REASON,
+            "skipped_tooltip": SKIPPED_TOOLTIP,
+            "skipped_summary_tooltip": SKIPPED_SUMMARY_TOOLTIP,
         },
     )
 

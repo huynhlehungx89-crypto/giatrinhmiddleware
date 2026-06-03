@@ -1,5 +1,30 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+    .preview-summary { display:flex; gap:16px; flex-wrap:wrap; margin:20px 0; padding:16px; background:#f3f4f6; border-radius:8px; }
+    .preview-summary [data-tooltip] { cursor: help; border-bottom:1px dotted #6b7280; }
+    .badge-skipped {
+        display:inline-flex; align-items:center; gap:4px;
+        padding:3px 10px; border-radius:12px; font-size:12px; font-weight:bold;
+        background:#dbeafe; color:#1e40af;
+    }
+    .skipped-info {
+        display:inline-flex; align-items:center; justify-content:center;
+        width:16px; height:16px; border-radius:50%;
+        background:#1a56db; color:#fff; font-size:11px; font-weight:bold;
+        cursor:help; line-height:1;
+    }
+    .no-valid-block {
+        flex:1 1 100%; max-width:100%;
+        display:flex; gap:16px; align-items:flex-start;
+        padding:20px; background:#fffbeb; border:1px solid #faca15;
+        border-radius:8px; margin:0;
+    }
+    .no-valid-block .icon { font-size:28px; line-height:1; }
+    .no-valid-block h3 { margin:0 0 8px; font-size:17px; color:#92400e; }
+    .no-valid-block p { margin:0; font-size:14px; color:#78350f; line-height:1.5; }
+    .preview-actions { margin-top:28px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+</style>
 <div class="card">
     <h1>📋 Xem trước import — {{ batch.filename }}</h1>
 
@@ -13,11 +38,13 @@
     <div class="alert alert-warning">{{ request.query_params.get('msg') }}</div>
     {% endif %}
 
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:20px 0;padding:16px;background:#f3f4f6;border-radius:8px;">
+    <div class="preview-summary">
         <div><strong>Tổng:</strong> {{ orders|length }}</div>
         <div><strong>✅ Valid:</strong> {{ batch.valid_orders or 0 }}</div>
         <div><strong>❌ Error:</strong> {{ batch.error_orders or 0 }}</div>
-        <div><strong>⏭ Skipped:</strong> {{ batch.skipped_orders or 0 }}</div>
+        <div data-tooltip="{{ skipped_summary_tooltip }}" title="{{ skipped_summary_tooltip }}">
+            <strong>⏭ Skipped:</strong> {{ batch.skipped_orders or 0 }}
+        </div>
     </div>
 
     <table>
@@ -27,7 +54,7 @@
                 <th>Cửa hàng</th>
                 <th>Số dòng</th>
                 <th>Trạng thái</th>
-                <th>Lý do lỗi</th>
+                <th>Lý do / Ghi chú</th>
             </tr>
         </thead>
         <tbody>
@@ -42,32 +69,50 @@
                     {% elif order.status == 'ERROR' %}
                     <span class="badge badge-error">ERROR</span>
                     {% elif order.status == 'SKIPPED' %}
-                    <span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:bold;background:#e5e7eb;color:#374151;">SKIPPED</span>
+                    <span class="badge-skipped" title="{{ skipped_tooltip }}">
+                        SKIPPED
+                        <span class="skipped-info" title="{{ skipped_tooltip }}" aria-label="{{ skipped_tooltip }}">i</span>
+                    </span>
                     {% else %}
                     <span class="badge badge-pending">{{ order.status }}</span>
                     {% endif %}
                 </td>
-                <td style="font-size:13px;color:#6b7280;">{{ order.error_message or '—' }}</td>
+                <td style="font-size:13px;color:#6b7280;">
+                    {% if order.status == 'SKIPPED' %}
+                        {{ order.error_message or skipped_reason }}
+                    {% else %}
+                        {{ order.error_message or '—' }}
+                    {% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 
-    <div style="margin-top:28px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+    <div class="preview-actions">
         {% if valid_count > 0 and not batch_imported %}
         <form method="post" action="/import/{{ batch.id }}">
             <button type="submit" class="btn btn-primary">
                 ĐẨY {{ valid_count }} ĐƠN VÀO ODOO
             </button>
         </form>
-        {% elif valid_count == 0 %}
-        <div class="alert alert-warning" style="margin:0;">
-            Không có đơn hàng hợp lệ để import.
+        {% elif valid_count == 0 and not batch_imported %}
+        <div class="no-valid-block">
+            <span class="icon" aria-hidden="true">ℹ️</span>
+            <div>
+                <h3>Không có đơn nào cần import</h3>
+                <p>
+                    Tất cả đơn hàng trong file này đã tồn tại trong Odoo.
+                    Nếu bạn cho rằng đây là lỗi, hãy liên hệ quản trị viên.
+                </p>
+            </div>
         </div>
         {% endif %}
 
+        {% if (batch.error_orders or 0) > 0 or (batch.skipped_orders or 0) > 0 %}
         <a href="/preview/{{ batch.id }}/errors" class="btn btn-secondary">Tải danh sách lỗi</a>
-        <a href="/upload" class="btn btn-secondary">← Quay lại Upload</a>
+        {% endif %}
+        <a href="/upload" class="btn btn-primary">← Quay lại Upload</a>
     </div>
 </div>
 {% endblock %}
